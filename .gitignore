@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Fotos de data/ SÍ se versionan (evidencia para la exposición).
+# Solo se ignoran capturas temporales de trabajo:
+data/tmp/
+data/*.tmp
