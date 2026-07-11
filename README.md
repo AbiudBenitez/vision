@@ -100,9 +100,13 @@ puntos de partida razonables. El flujo correcto:
    **limpia y cerrada**. Sin esto ningún detector es confiable.
 3. Tomar 5–10 fotos a `data/` (buenas + defectos simulados: barreno tapado,
    barreno ovalado, esquina recortada, borde deformado). Ver `data/README.md`.
-4. Calibrar cada detector con `python main.py --img data/<foto>.jpg`, ajustando
-   sus rangos en `src/config.py` (`radio_min/max`, `ratio_min`,
-   `barrenos_esperados`, `vertices_esperados`, `area_min_*`).
+4. Medir las fotos y obtener valores sugeridos sin adivinar:
+   ```bash
+   python calibrar.py            # mide todas las fotos de data/
+   ```
+   Deduce la polaridad, mide radios/ratios/vértices/áreas de las fotos
+   `buena_*` e imprime un bloque de valores listo para revisar y pegar en
+   `src/config.py`. Verifica luego con `python main.py --img data/<foto>.jpg`.
 
 ## Estado / pendientes
 
