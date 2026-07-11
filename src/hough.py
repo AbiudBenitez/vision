@@ -105,7 +105,9 @@ def detectar_lineas(
     anotado = frame.copy()
     segmentos = []
     if lineas is not None:
-        for x1, y1, x2, y2 in lineas[:, 0]:
+        # HoughLinesP devuelve forma (N,1,4); reshape a (N,4) para desempacar
+        # cada segmento de forma robusta entre versiones de OpenCV.
+        for x1, y1, x2, y2 in lineas.reshape(-1, 4):
             ang = float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
             segmentos.append({"p1": (int(x1), int(y1)), "p2": (int(x2), int(y2)), "ang": ang})
             cv2.line(anotado, (x1, y1), (x2, y2), (0, 255, 0), 2)
