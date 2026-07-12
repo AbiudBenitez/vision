@@ -34,6 +34,28 @@ class ParamsPreproceso:
     cierre_iter: int = 1
 
 
+def escalar_a_ancho(frame: np.ndarray, ancho: int) -> np.ndarray:
+    """Normaliza el frame a un ancho fijo, conservando el aspecto.
+
+    Es el PRIMER paso del pipeline y no es cosmético: todos los parámetros del
+    proyecto están calibrados contra data/ a 640px de ancho. Las fotos de data/
+    vienen de un celular a 4000px y la webcam entrega ~640px, y a 4000px la
+    binarización saca ~86 huecos del estampado contra ~34 a 640px: no es la misma
+    imagen, es otra escala de detalle. Fijar el ancho aquí es lo que hace que
+    calibrar con las fotos siga valiendo frente a la webcam en vivo.
+
+    INTER_AREA es el remuestreo correcto para reducir: promedia los píxeles que
+    colapsa, en vez de tomar uno y tirar el resto, así que no genera el aliasing
+    que le daría a Hough votos fantasma.
+    """
+    h, w = frame.shape[:2]
+    if w == ancho:
+        return frame
+    return cv2.resize(
+        frame, (ancho, int(h * ancho / w)), interpolation=cv2.INTER_AREA
+    )
+
+
 def a_grises(frame: np.ndarray) -> np.ndarray:
     """BGR -> gris. Todo el pipeline clásico trabaja en un solo canal."""
     if frame.ndim == 2:

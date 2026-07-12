@@ -25,7 +25,7 @@ import sys
 import cv2
 
 from src.config import ParamsInspeccion
-from src.preprocess import detectar_preproceso
+from src.preprocess import detectar_preproceso, escalar_a_ancho
 from src.holes import detectar_holes
 from src.hough import detectar_circulos, detectar_lineas
 from src.ellipses import detectar_elipses
@@ -90,6 +90,11 @@ def main():
             ok, frame = cap.read()
             if not ok:
                 break
+
+        # Normalizar la escala ANTES de cualquier detector: los params están
+        # calibrados a cfg.ancho_trabajo. Sin esto, una foto de celular (4000px)
+        # y la webcam (640px) recorren caminos distintos con los mismos números.
+        frame = escalar_a_ancho(frame, cfg.ancho_trabajo)
 
         if modo_actual == MODO_MOTION:
             anotado, res = trigger.procesar(frame)

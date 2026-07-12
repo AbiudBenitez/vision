@@ -15,20 +15,47 @@ from .preprocess import ParamsPreproceso, a_grises
 
 @dataclass
 class ParamsCirculos:
+    # Los radios y distancias van como FRACCIÓN DEL ANCHO del frame, no en px:
+    # las fotos de data/ (4000px de ancho) y la webcam de la demo (640px) no
+    # comparten escala, así que un radio en px calibrado con una no sirve para la
+    # otra. Se convierten a px en tiempo de ejecución. Todos los números medidos
+    # abajo están normalizados a un frame de 640px de ancho.
+
     # dp: resolución inversa del acumulador. 1.2 da margen de tolerancia sin
     # perder precisión; subir si los barrenos no se detectan por ruido.
     dp: float = 1.2
-    # Distancia mínima entre centros. Debe ser ~ el diámetro esperado para no
-    # detectar dos círculos sobre un mismo barreno. Calibrar contra data/.
-    min_dist: float = 40.0
-    # param1: umbral alto de Canny interno. param2: votos para aceptar círculo
-    # (más bajo = más círculos, más falsos positivos).
+    # Distancia mínima entre centros, para no sacar dos círculos del mismo
+    # barreno. Los barrenos están separados ~48px (medido en data/) y su diámetro
+    # es ~33px: 35px (0.055*640) cae entre ambos, así que no fusiona barrenos
+    # vecinos ni duplica uno solo.
+    frac_min_dist: float = 0.055
+    # param1: umbral alto de Canny interno. param2: votos para aceptar círculo.
+    # param2=30 medido contra las 5 fotos: da los 3 barrenos con 0-1 falsos. Con
+    # 20 entran 4-8 falsos del estampado; con 40 se PIERDE un barreno sano en
+    # buena_02 (falso NG), que es el error más caro. 30 es el punto dulce.
     param1: float = 100.0
     param2: float = 30.0
-    # Rango de radios esperados (px). Fuera de este rango => barreno fuera de
-    # diámetro. Calibrar midiendo un barreno bueno en una foto de data/.
-    radio_min: int = 8
-    radio_max: int = 40
+    # Rango de radios aceptados. Este rango ES el criterio de "barreno dentro de
+    # diámetro": Hough sencillamente no reporta lo que cae fuera.
+    # Medido en data/ (a 640px de ancho): los barrenos sanos dan radio 15.9-16.9
+    # y el barreno defectuoso de def_ovalado da 11.8. El piso 13px (0.0203*640)
+    # se planta entre ambos grupos -> el defectuoso no genera círculo y el check
+    # de diámetro lo reprueba. El techo 21px (0.0328*640) deja ~1.25x de holgura
+    # sobre el barreno sano más grande.
+    frac_radio_min: float = 0.0203
+    frac_radio_max: float = 0.0328
+
+    def radios_px(self, ancho: int) -> tuple[int, int]:
+        """Rango de radios en píxeles para el ancho de frame actual.
+
+        round() y no int(): truncar movería el piso de 13px a 12px (int(12.99)),
+        y el barreno defectuoso de def_ovalado mide 11.8px. Ese píxel de más es
+        justo el margen que separa "fuera de diámetro" de "aceptado por error".
+        """
+        return (
+            max(1, round(self.frac_radio_min * ancho)),
+            max(2, round(self.frac_radio_max * ancho)),
+        )
 
 
 @dataclass
@@ -54,15 +81,18 @@ def detectar_circulos(
     # dispersos por textura del plástico.
     gris = cv2.medianBlur(gris, 5)
 
+    ancho = frame.shape[1]
+    radio_min, radio_max = params.radios_px(ancho)
+
     circulos = cv2.HoughCircles(
         gris,
         cv2.HOUGH_GRADIENT,
         dp=params.dp,
-        minDist=params.min_dist,
+        minDist=params.frac_min_dist * ancho,
         param1=params.param1,
         param2=params.param2,
-        minRadius=params.radio_min,
-        maxRadius=params.radio_max,
+        minRadius=radio_min,
+        maxRadius=radio_max,
     )
 
     anotado = frame.copy()

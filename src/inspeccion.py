@@ -38,6 +38,34 @@ def _bordes_ortogonales(lineas, tol_grados: float = 15.0) -> bool:
     return horiz and vert
 
 
+def _diametros_ok(barrenos, circulos, n_esperados: int, tolerancia: float) -> bool:
+    """True si CADA barreno esperado tiene un círculo de Hough encima.
+
+    No basta con contar los círculos que Hough devuelve en todo el frame: el
+    estampado de la funda genera 0-1 falsos positivos por foto, y ese ruido puede
+    completar el conteo de una funda a la que le falta un barreno (en data/,
+    def_tapado da exactamente eso: 2 barrenos reales + 1 falso = 3). El conteo
+    crudo diría "diámetro OK" sobre una pieza defectuosa.
+
+    Por eso se EMPAREJA: cada barreno hallado por contornos (holes) debe tener un
+    círculo de Hough con el centro encima. Como HoughCircles solo acepta radios
+    dentro del rango calibrado, un barreno fuera de diámetro simplemente no
+    genera círculo y se queda sin pareja -> reprueba. Así es como se caza el
+    barreno chico de def_ovalado (radio 11.8px contra los 15.9-16.9 sanos).
+
+    Los falsos positivos del estampado quedan lejos de cualquier barreno y no
+    emparejan con nada, así que dejan de contaminar el veredicto.
+    """
+    emparejados = 0
+    for b in barrenos:
+        bx, by = b["centro"]
+        if any(
+            np.hypot(c["x"] - bx, c["y"] - by) <= tolerancia for c in circulos
+        ):
+            emparejados += 1
+    return emparejados == n_esperados
+
+
 def inspeccion_completa(
     frame: np.ndarray, cfg: ParamsInspeccion
 ) -> tuple[np.ndarray, dict]:
@@ -57,15 +85,10 @@ def inspeccion_completa(
     _, r_lin = detectar_lineas(frame, cfg.lineas)
 
     n_esperados = cfg.holes.barrenos_esperados
-    circulos = r_circ["circulos"]
-    # Diámetro OK: se detectan al menos los barrenos esperados y todos los
-    # radios caen dentro del rango calibrado (fuera de rango = barreno sobre/
-    # sub-dimensionado).
-    radios_en_rango = all(
-        cfg.circulos.radio_min <= c["r"] <= cfg.circulos.radio_max
-        for c in circulos
+    diametro_ok = _diametros_ok(
+        r_elip["barrenos"], r_circ["circulos"], n_esperados,
+        tolerancia=0.5 * cfg.circulos.frac_min_dist * frame.shape[1],
     )
-    diametro_ok = len(circulos) >= n_esperados and radios_en_rango
 
     checks = {
         "barrenos_ok": r_holes.get("ok", False),

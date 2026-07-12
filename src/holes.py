@@ -16,16 +16,81 @@ from .preprocess import ParamsPreproceso, binarizar
 @dataclass
 class ParamsHoles:
     pre: ParamsPreproceso = None
-    # Área mínima (px^2) para que un contorno exterior cuente como "la funda" y
-    # no como ruido. Depende de la distancia cámara-pieza; calibrar contra
-    # data/. Valor por defecto pensado para funda que llena ~1/3 del frame.
-    area_min_funda: float = 15000.0
-    # Área mínima de un hueco interior para contarlo como barreno real y
-    # descartar poros/artefactos de binarización.
-    area_min_barreno: float = 80.0
-    # Barrenos esperados en una funda buena (p.ej. 1 cámara + 1 flash). El
-    # veredicto compara el conteo real contra esto.
-    barrenos_esperados: int = 2
+    # Los umbrales de área son FRACCIONES, no píxeles. Una foto de celular
+    # (4000x3000) y la webcam de la demo (640x480) difieren ~40x en área, así
+    # que cualquier umbral en px^2 calibrado contra data/ sería inservible en
+    # vivo. Las fracciones son invariantes a la resolución: se calibran una vez
+    # con las fotos y siguen valiendo frente a la webcam.
+
+    # Fracción mínima del FRAME para aceptar un contorno exterior como la funda.
+    # Medido en data/: la funda ocupa 23%-25% del frame. 0.02 deja margen amplio
+    # para que la pieza pueda estar más lejos sin dejar de detectarse.
+    frac_min_funda: float = 0.02
+    # Fracción del área de LA FUNDA que debe medir un hueco para ser barreno.
+    # Medido sobre las 5 fotos de data/: los barrenos SANOS caen en 0.0050-0.0058
+    # de forma muy estable. El límite inferior NO se pone pegado a ese rango a
+    # propósito: en def_ovalado el barreno defectuoso mide 0.0024, y si se cae de
+    # este filtro el sistema lo reporta como barreno FALTANTE en vez de
+    # DEFORME -> diagnóstico equivocado, y ellipses.py nunca llega a verlo.
+    # 0.002 lo deja entrar para que los detectores de forma lo juzguen.
+    # El techo 0.010 descarta manchas grandes del estampado.
+    frac_barreno_min: float = 0.002
+    frac_barreno_max: float = 0.010
+    # Circularidad 4*pi*A/P^2 (1.0 = círculo perfecto). Este es el filtro que
+    # hace el trabajo pesado, no el área: al bajar frac_barreno_min a 0.002
+    # entran manchas del estampado en la banda 0.002-0.003, pero TODAS miden
+    # 0.26-0.45 de circularidad, mientras que los barrenos (sanos o deformes)
+    # miden 0.82-0.91. El corte en 0.60 cae en medio de ese abismo: ninguna
+    # mancha se le acerca y ningún barreno se le escapa.
+    circularidad_min: float = 0.60
+    # Barrenos esperados en una funda buena: los 3 de la cámara. El veredicto
+    # compara el conteo real contra esto. En data/, def_tapado da 2 -> NG.
+    barrenos_esperados: int = 3
+
+
+def _circularidad(contorno) -> float:
+    """4*pi*A/P^2: 1.0 para un círculo, tiende a 0 para formas alargadas o de
+    perímetro rugoso. Distingue un barreno de una mancha del estampado que
+    casualmente tenga el área correcta."""
+    perimetro = cv2.arcLength(contorno, True)
+    if perimetro <= 0:
+        return 0.0
+    return float(4.0 * np.pi * cv2.contourArea(contorno) / (perimetro * perimetro))
+
+
+def indices_barrenos(contornos, jerarquia, i_funda, params: "ParamsHoles") -> list[int]:
+    """Índices de los hijos de la funda que son barrenos de verdad.
+
+    Los barrenos son los hijos directos del contorno de la funda: recorremos la
+    cadena de hermanos que cuelgan de i_funda (jerarquia[i][2] = primer hijo,
+    jerarquia[i][0] = siguiente hermano).
+
+    Ojo: en una funda ESTAMPADA los hijos no son solo los barrenos. El dibujo
+    impreso tiene zonas oscuras que la binarización convierte en huecos, y
+    aparecen aquí como hermanos legítimos (~30-40 por foto en data/). Por eso el
+    conteo crudo de hijos no sirve: hay que filtrarlos por tamaño y forma.
+
+    Vive aquí y es pública porque ellipses.py debe juzgar EXACTAMENTE los mismos
+    huecos que holes.py cuenta. Si cada módulo eligiera sus barrenos por su
+    cuenta, el veredicto podría decir "3 barrenos OK" mientras el de elipses mide
+    la deformación de una mancha del estampado.
+    """
+    area_funda = cv2.contourArea(contornos[i_funda])
+    if area_funda <= 0:
+        return []
+
+    barrenos = []
+    hijo = jerarquia[0][i_funda][2]
+    while hijo != -1:
+        c = contornos[hijo]
+        frac = cv2.contourArea(c) / area_funda
+        if (
+            params.frac_barreno_min <= frac <= params.frac_barreno_max
+            and _circularidad(c) >= params.circularidad_min
+        ):
+            barrenos.append(hijo)
+        hijo = jerarquia[0][hijo][0]
+    return barrenos
 
 
 def _contorno_funda(contornos, jerarquia, area_min):
@@ -67,23 +132,18 @@ def detectar_holes(
     if jerarquia is None or len(contornos) == 0:
         return anotado, {"barrenos": 0, "ok": False, "motivo": "sin_contornos"}
 
-    i_funda = _contorno_funda(contornos, jerarquia, params.area_min_funda)
+    area_frame = float(binaria.shape[0] * binaria.shape[1])
+    i_funda = _contorno_funda(
+        contornos, jerarquia, params.frac_min_funda * area_frame
+    )
     if i_funda == -1:
         return anotado, {"barrenos": 0, "ok": False, "motivo": "sin_funda"}
 
     cv2.drawContours(anotado, contornos, i_funda, (255, 0, 0), 2)
 
-    # Los barrenos son los hijos directos del contorno de la funda: recorremos
-    # la cadena de hermanos que cuelgan de i_funda (jerarquia[i][2] = primer
-    # hijo, jerarquia[i][0] = siguiente hermano).
-    barrenos = []
-    hijo = jerarquia[0][i_funda][2]
-    while hijo != -1:
-        area = cv2.contourArea(contornos[hijo])
-        if area >= params.area_min_barreno:
-            barrenos.append(hijo)
-            cv2.drawContours(anotado, contornos, hijo, (0, 0, 255), 2)
-        hijo = jerarquia[0][hijo][0]
+    barrenos = indices_barrenos(contornos, jerarquia, i_funda, params)
+    for i in barrenos:
+        cv2.drawContours(anotado, contornos, i, (0, 0, 255), 2)
 
     n = len(barrenos)
     ok = n == params.barrenos_esperados

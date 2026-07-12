@@ -18,7 +18,10 @@ from .holes import _contorno_funda
 @dataclass
 class ParamsShapes:
     pre: ParamsPreproceso = None
-    area_min_funda: float = 15000.0
+    # Fracción del frame, no px^2: mismo motivo que en ParamsHoles (las fotos de
+    # data/ y la webcam difieren ~40x en área). Debe coincidir con
+    # ParamsHoles.frac_min_funda para que ambos detectores elijan LA MISMA funda.
+    frac_min_funda: float = 0.02
     # epsilon de approxPolyDP como fracción del perímetro. 0.02 es el valor
     # típico para simplificar a un polígono limpio sin colapsar esquinas
     # legítimas; subir si aparecen vértices espurios por ruido del contorno.
@@ -52,7 +55,10 @@ def detectar_shapes(
     if jerarquia is None or len(contornos) == 0:
         return anotado, {"vertices": 0, "ok": False, "motivo": "sin_contornos"}
 
-    i_funda = _contorno_funda(contornos, jerarquia, params.area_min_funda)
+    area_frame = float(binaria.shape[0] * binaria.shape[1])
+    i_funda = _contorno_funda(
+        contornos, jerarquia, params.frac_min_funda * area_frame
+    )
     if i_funda == -1:
         return anotado, {"vertices": 0, "ok": False, "motivo": "sin_funda"}
 
@@ -66,13 +72,17 @@ def detectar_shapes(
     for v in poly[:, 0]:
         cv2.circle(anotado, tuple(v), 5, (0, 255, 255), -1)
 
-    # Shi-Tomasi dentro de la máscara de la funda: da las esquinas "físicas"
-    # para señalar cuál está dañada, complementando el conteo de approxPolyDP.
+    # Shi-Tomasi sobre la MÁSCARA de la silueta, no sobre el frame en grises.
+    # La funda va estampada: sobre el gris, Shi-Tomasi encontraría las esquinas
+    # del DIBUJO impreso (que tiene mucho más gradiente que el borde de la
+    # pieza) y no las de la funda. La máscara es blanco liso dentro y negro
+    # fuera, así que el único gradiente que existe es el contorno físico -> las
+    # esquinas que salen son geométricas por construcción, y el estampado
+    # simplemente no existe para el detector.
     mascara = np.zeros(binaria.shape, np.uint8)
     cv2.drawContours(mascara, [c], -1, 255, -1)
-    gris = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
     esquinas = cv2.goodFeaturesToTrack(
-        gris,
+        mascara,
         maxCorners=params.max_esquinas,
         qualityLevel=params.calidad,
         minDistance=params.dist_min,
