@@ -57,7 +57,7 @@ def detectar_shapes(
 
     area_frame = float(binaria.shape[0] * binaria.shape[1])
     i_funda = _contorno_funda(
-        contornos, jerarquia, params.frac_min_funda * area_frame
+        contornos, jerarquia, params.frac_min_funda * area_frame, binaria.shape
     )
     if i_funda == -1:
         return anotado, {"vertices": 0, "ok": False, "motivo": "sin_funda"}

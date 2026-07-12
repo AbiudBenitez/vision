@@ -5,30 +5,48 @@ espacio de parámetros, así que tolera barrenos parcialmente ocluidos o bordes
 con micro-cortes mejor que un ajuste directo de contornos. Aquí sirve para
 verificar PRESENCIA y DIÁMETRO de barrenos, y RECTITUD de bordes.
 """
+import math
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
-from .preprocess import ParamsPreproceso, a_grises
+from .preprocess import ParamsPreproceso, a_grises, binarizar
+from .holes import ParamsHoles, _contorno_funda
 
 
 @dataclass
 class ParamsCirculos:
-    # Los radios y distancias van como FRACCIÓN DEL ANCHO del frame, no en px:
-    # las fotos de data/ (4000px de ancho) y la webcam de la demo (640px) no
-    # comparten escala, así que un radio en px calibrado con una no sirve para la
-    # otra. Se convierten a px en tiempo de ejecución. Todos los números medidos
-    # abajo están normalizados a un frame de 640px de ancho.
+    # Radios y distancias van como fracción de sqrt(ÁREA DE LA FUNDA), no en px
+    # ni como fracción del ancho del frame. La razón importa:
+    #
+    # Un barreno se ve más grande cuando la funda se ve más grande, y eso no
+    # depende del encuadre sino de la pieza. Normalizar por el ancho del frame
+    # PARECE funcionar hasta que cambia el aspect ratio: las fotos de data/ son
+    # verticales (640x853) y la webcam entrega horizontal (640x360). Mismo ancho,
+    # área muy distinta. Medido: los barrenos sanos dan r/ancho = 0.0249-0.0264
+    # en las fotos pero 0.0189-0.0202 en la webcam, y el barreno DEFECTUOSO de
+    # def_ovalado da 0.0185 -> un barreno sano visto por webcam es indistinguible
+    # de uno defectuoso visto en foto. Ese criterio rechaza piezas buenas en vivo.
+    #
+    # Con r/sqrt(area_funda) los dos montajes coinciden: sanos 0.0436-0.0469 en
+    # fotos y 0.0453-0.0484 en webcam, contra 0.0328 del defectuoso. Es la
+    # magnitud correcta porque sqrt(area) tiene unidades de longitud, igual que
+    # el radio, así que el cociente es adimensional e invariante a la escala.
+
+    # Solo para el modo suelto de círculos, que debe deducir el tamaño de la
+    # funda por su cuenta. En la inspección completa el área viene dada por holes.
+    pre: ParamsPreproceso = None
+    holes: ParamsHoles = None
 
     # dp: resolución inversa del acumulador. 1.2 da margen de tolerancia sin
     # perder precisión; subir si los barrenos no se detectan por ruido.
     dp: float = 1.2
     # Distancia mínima entre centros, para no sacar dos círculos del mismo
-    # barreno. Los barrenos están separados ~48px (medido en data/) y su diámetro
-    # es ~33px: 35px (0.055*640) cae entre ambos, así que no fusiona barrenos
-    # vecinos ni duplica uno solo.
-    frac_min_dist: float = 0.055
+    # barreno. Los barrenos están separados ~48px y su diámetro es ~33px (medido
+    # en data/, donde sqrt(area_funda)=365): 0.10 cae entre ambos, así que no
+    # fusiona barrenos vecinos ni duplica uno solo.
+    frac_min_dist: float = 0.10
     # param1: umbral alto de Canny interno. param2: votos para aceptar círculo.
     # param2=30 medido contra las 5 fotos: da los 3 barrenos con 0-1 falsos. Con
     # 20 entran 4-8 falsos del estampado; con 40 se PIERDE un barreno sano en
@@ -36,25 +54,25 @@ class ParamsCirculos:
     param1: float = 100.0
     param2: float = 30.0
     # Rango de radios aceptados. Este rango ES el criterio de "barreno dentro de
-    # diámetro": Hough sencillamente no reporta lo que cae fuera.
-    # Medido en data/ (a 640px de ancho): los barrenos sanos dan radio 15.9-16.9
-    # y el barreno defectuoso de def_ovalado da 11.8. El piso 13px (0.0203*640)
-    # se planta entre ambos grupos -> el defectuoso no genera círculo y el check
-    # de diámetro lo reprueba. El techo 21px (0.0328*640) deja ~1.25x de holgura
-    # sobre el barreno sano más grande.
-    frac_radio_min: float = 0.0203
-    frac_radio_max: float = 0.0328
+    # diámetro": Hough sencillamente no reporta lo que cae fuera, así que un
+    # barreno fuera de tolerancia se queda sin círculo y reprueba.
+    # Sanos medidos (fotos + webcam): 0.0436-0.0484. Defectuoso: 0.0328.
+    # El piso 0.038 se planta en el hueco entre ambos grupos; el techo 0.056 deja
+    # ~1.15x de holgura sobre el barreno sano más grande visto.
+    frac_radio_min: float = 0.038
+    frac_radio_max: float = 0.056
 
-    def radios_px(self, ancho: int) -> tuple[int, int]:
-        """Rango de radios en píxeles para el ancho de frame actual.
+    def radios_px(self, area_funda: float) -> tuple[int, int]:
+        """Rango de radios en píxeles para el tamaño de funda detectado.
 
-        round() y no int(): truncar movería el piso de 13px a 12px (int(12.99)),
-        y el barreno defectuoso de def_ovalado mide 11.8px. Ese píxel de más es
-        justo el margen que separa "fuera de diámetro" de "aceptado por error".
+        round() y no int(): truncar rebaja el piso casi un píxel entero, y el
+        margen que separa "fuera de diámetro" de "aceptado por error" se mide
+        justamente en píxeles sueltos.
         """
+        escala = math.sqrt(max(area_funda, 1.0))
         return (
-            max(1, round(self.frac_radio_min * ancho)),
-            max(2, round(self.frac_radio_max * ancho)),
+            max(1, round(self.frac_radio_min * escala)),
+            max(2, round(self.frac_radio_max * escala)),
         )
 
 
@@ -71,24 +89,63 @@ class ParamsLineas:
     hueco_max: int = 10
 
 
+def area_funda_de(frame: np.ndarray, pre: ParamsPreproceso, holes: ParamsHoles) -> float:
+    """Área en px del contorno de la funda. 0.0 si no hay funda en el frame.
+
+    Hough necesita el tamaño de la funda para saber qué radio ESPERAR (ver
+    ParamsCirculos). En la inspección completa ese dato ya lo calculó holes y se
+    pasa hecho; esto es solo para el modo suelto de círculos, que no tiene a
+    nadie que se lo dé.
+    """
+    binaria, _ = binarizar(frame, pre)
+    contornos, jerarquia = cv2.findContours(
+        binaria, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if jerarquia is None or len(contornos) == 0:
+        return 0.0
+    area_frame = float(binaria.shape[0] * binaria.shape[1])
+    i = _contorno_funda(
+        contornos, jerarquia, holes.frac_min_funda * area_frame, binaria.shape
+    )
+    return cv2.contourArea(contornos[i]) if i != -1 else 0.0
+
+
 def detectar_circulos(
-    frame: np.ndarray, params: ParamsCirculos
+    frame: np.ndarray, params: ParamsCirculos, area_funda: float = None
 ) -> tuple[np.ndarray, dict]:
     """HoughCircles sobre gris suavizado. Reporta centro y radio de cada
-    barreno detectado; el radio permite juzgar si está fuera de diámetro."""
+    barreno detectado; el radio permite juzgar si está fuera de diámetro.
+
+    `area_funda` fija la escala del radio esperado. Si no se pasa (modo suelto),
+    se deduce del frame. Sin funda no hay escala de referencia y no tiene sentido
+    buscar barrenos: se devuelve vacío en vez de inventar un rango de radios.
+    """
+    if area_funda is None:
+        area_funda = area_funda_de(
+            frame, params.pre or ParamsPreproceso(), params.holes or ParamsHoles()
+        )
+
+    anotado_vacio = frame.copy()
+    if area_funda <= 0:
+        cv2.putText(
+            anotado_vacio, "sin funda", (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
+        )
+        return anotado_vacio, {"circulos": [], "n": 0}
+
     gris = a_grises(frame)
     # HoughCircles ya corre Canny internamente; el blur medio evita votos
     # dispersos por textura del plástico.
     gris = cv2.medianBlur(gris, 5)
 
-    ancho = frame.shape[1]
-    radio_min, radio_max = params.radios_px(ancho)
+    escala = math.sqrt(area_funda)
+    radio_min, radio_max = params.radios_px(area_funda)
 
     circulos = cv2.HoughCircles(
         gris,
         cv2.HOUGH_GRADIENT,
         dp=params.dp,
-        minDist=params.frac_min_dist * ancho,
+        minDist=params.frac_min_dist * escala,
         param1=params.param1,
         param2=params.param2,
         minRadius=radio_min,

@@ -43,3 +43,8 @@ class ParamsInspeccion:
         # ellipses debe juzgar EXACTAMENTE los barrenos que holes cuenta, así
         # que comparte su criterio de selección en vez de tener uno propio.
         self.ellipses.holes = self.holes
+        # circulos necesita el tamaño de la funda para saber qué radio esperar;
+        # en el modo suelto lo deduce, y para eso requiere la misma config de
+        # binarización y de selección de funda que el resto.
+        self.circulos.pre = self.pre
+        self.circulos.holes = self.holes

@@ -93,15 +93,48 @@ def indices_barrenos(contornos, jerarquia, i_funda, params: "ParamsHoles") -> li
     return barrenos
 
 
-def _contorno_funda(contornos, jerarquia, area_min):
-    """Regresa el índice del contorno exterior más grande = la funda.
+def _toca_borde(contorno, forma, margen: int = 2) -> bool:
+    """True si el contorno llega al borde del frame.
+
+    Sirve para reconocer al FONDO y descartarlo. La funda se inspecciona
+    completa, así que por construcción está entera dentro del encuadre y no
+    puede tocar el borde; cualquier cosa que sí lo toque está recortada por el
+    marco y no es la pieza.
+    """
+    alto, ancho = forma[:2]
+    x, y, w, h = cv2.boundingRect(contorno)
+    return (
+        x <= margen
+        or y <= margen
+        or x + w >= ancho - margen
+        or y + h >= alto - margen
+    )
+
+
+def _contorno_funda(contornos, jerarquia, area_min, forma=None):
+    """Regresa el índice del contorno exterior que corresponde a la funda.
 
     En RETR_CCOMP los exteriores tienen jerarquia[i][3] == -1 (sin padre).
-    Elegimos el de mayor área para ignorar restos del fondo.
+
+    "El exterior más grande" NO basta como criterio, y falla en cuanto el fondo
+    deja de ser perfecto. Medido con la webcam: al colarse un teclado y un
+    monitor oscuros en el encuadre, la binarización los une en un blob que ocupa
+    el frame entero (bbox 0,0,640x360) y le gana por área a la funda (8.6%). El
+    detector se quedaba mirando ese blob, que no tiene barrenos, y reportaba
+    "0 barrenos" sobre una funda perfectamente sana.
+
+    Por eso se descarta primero lo que toca el borde del frame: el fondo siempre
+    lo toca y la pieza, que se inspecciona completa, nunca. Entre lo que queda,
+    el más grande sí es la funda.
+
+    `forma` es (alto, ancho) del frame. Si no se pasa, se conserva el criterio
+    viejo de solo-área, para no romper llamadores que aún no lo proveen.
     """
     mejor_i, mejor_area = -1, 0.0
     for i, c in enumerate(contornos):
         if jerarquia[0][i][3] != -1:  # tiene padre => es un hueco, no la funda
+            continue
+        if forma is not None and _toca_borde(c, forma):
             continue
         area = cv2.contourArea(c)
         if area > mejor_area and area >= area_min:
@@ -134,10 +167,12 @@ def detectar_holes(
 
     area_frame = float(binaria.shape[0] * binaria.shape[1])
     i_funda = _contorno_funda(
-        contornos, jerarquia, params.frac_min_funda * area_frame
+        contornos, jerarquia, params.frac_min_funda * area_frame, binaria.shape
     )
     if i_funda == -1:
-        return anotado, {"barrenos": 0, "ok": False, "motivo": "sin_funda"}
+        return anotado, {
+            "barrenos": 0, "ok": False, "motivo": "sin_funda", "area_funda": 0.0,
+        }
 
     cv2.drawContours(anotado, contornos, i_funda, (255, 0, 0), 2)
 
@@ -162,4 +197,7 @@ def detectar_holes(
         "ok": ok,
         "indices_barrenos": barrenos,
         "indice_funda": i_funda,
+        # Hough lo necesita para saber qué radio de barreno esperar; se publica
+        # aquí para no volver a segmentar la funda por segunda vez.
+        "area_funda": cv2.contourArea(contornos[i_funda]),
     }

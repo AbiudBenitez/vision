@@ -65,7 +65,9 @@ def detectar_elipses(
         return anotado, {"barrenos": [], "todos_circulares": True}
 
     area_frame = float(binaria.shape[0] * binaria.shape[1])
-    i_funda = _contorno_funda(contornos, jerarquia, p_holes.frac_min_funda * area_frame)
+    i_funda = _contorno_funda(
+        contornos, jerarquia, p_holes.frac_min_funda * area_frame, binaria.shape
+    )
     if i_funda == -1:
         return anotado, {"barrenos": [], "todos_circulares": True}
 

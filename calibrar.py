@@ -71,7 +71,9 @@ def medir_una_polaridad(frame, invertir, cfg):
     if jer is None or len(contornos) == 0:
         return None
 
-    i_funda = _contorno_funda(contornos, jer, cfg.holes.frac_min_funda * total)
+    i_funda = _contorno_funda(
+        contornos, jer, cfg.holes.frac_min_funda * total, binaria.shape
+    )
     if i_funda == -1:
         return None
 

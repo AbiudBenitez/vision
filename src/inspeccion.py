@@ -5,6 +5,8 @@ contener lógica de visión: aquí se combinan conteo de barrenos, circularidad,
 forma del contorno, diámetro (Hough círculos) y ortogonalidad de bordes (Hough
 líneas) en un OK/NG global.
 """
+import math
+
 import cv2
 import numpy as np
 
@@ -81,13 +83,16 @@ def inspeccion_completa(
     _, r_holes = detectar_holes(frame, cfg.holes, binaria)
     anotado, r_shapes = detectar_shapes(frame, cfg.shapes, binaria)
     _, r_elip = detectar_elipses(frame, cfg.ellipses, binaria)
-    _, r_circ = detectar_circulos(frame, cfg.circulos)
+    # El área de la funda fija la escala del radio de barreno que Hough debe
+    # esperar; holes ya la midió, así que se le pasa en vez de re-segmentar.
+    area_funda = r_holes.get("area_funda", 0.0)
+    _, r_circ = detectar_circulos(frame, cfg.circulos, area_funda)
     _, r_lin = detectar_lineas(frame, cfg.lineas)
 
     n_esperados = cfg.holes.barrenos_esperados
     diametro_ok = _diametros_ok(
         r_elip["barrenos"], r_circ["circulos"], n_esperados,
-        tolerancia=0.5 * cfg.circulos.frac_min_dist * frame.shape[1],
+        tolerancia=0.5 * cfg.circulos.frac_min_dist * math.sqrt(max(area_funda, 1.0)),
     )
 
     checks = {
