@@ -21,10 +21,23 @@ class ParamsMotion:
     detectar_sombras: bool = False
     # Fracción de píxeles de primer plano por encima de la cual consideramos
     # "hay movimiento / hay pieza entrando".
+    #
+    # Medido con esta webcam: con la escena quieta, MOG2 marca 0.0002 de media y
+    # 0.0021 en el peor frame (ruido del sensor). 0.02 está 10x por encima de ese
+    # piso, así que el ruido no dispara movimiento por sí solo.
     umbral_movimiento: float = 0.02
     # Frames consecutivos por debajo del umbral para declarar "quieto" y
     # disparar la inspección una sola vez.
     frames_quieto: int = 12
+    # Frames iniciales que se IGNORAN por completo.
+    #
+    # MOG2 arranca sin modelo de fondo, así que en sus primeros cuadros marca la
+    # imagen ENTERA como primer plano (medido: frac_fg = 1.0000 en el frame 0).
+    # El trigger lo leía como "acaba de entrar una pieza"; la escena se estabiliza
+    # de inmediato y a los 12 frames disparaba una inspección fantasma, sobre una
+    # mesa vacía, antes de que nadie hubiera puesto nada. Se ignoran los primeros
+    # cuadros hasta que MOG2 tiene fondo.
+    frames_calentamiento: int = 30
 
 
 class TriggerInspeccion:
@@ -44,6 +57,7 @@ class TriggerInspeccion:
         )
         self.hubo_movimiento = False
         self.frames_estables = 0
+        self.n_frames = 0
 
     def procesar(self, frame: np.ndarray) -> tuple[np.ndarray, dict]:
         """Devuelve (frame_anotado, {disparar: bool, ...}).
@@ -56,6 +70,21 @@ class TriggerInspeccion:
         # activas; nos quedamos con primer plano fuerte (255).
         _, fg_bin = cv2.threshold(fg, 200, 255, cv2.THRESH_BINARY)
         frac = float(np.count_nonzero(fg_bin)) / fg_bin.size
+
+        self.n_frames += 1
+        # Durante el calentamiento MOG2 aún no tiene fondo y marca la imagen
+        # entera como primer plano. Se alimenta el modelo (el apply() de arriba ya
+        # lo hizo) pero no se deja que ese ruido de arranque arme el trigger.
+        if self.n_frames <= self.params.frames_calentamiento:
+            anotado = frame.copy()
+            cv2.putText(
+                anotado, f"calentando MOG2 {self.n_frames}/"
+                f"{self.params.frames_calentamiento}",
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2,
+            )
+            return anotado, {
+                "disparar": False, "frac_fg": frac, "estado": "CALENTANDO",
+            }
 
         hay_mov = frac > self.params.umbral_movimiento
         disparar = False
