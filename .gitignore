@@ -19,3 +19,6 @@ Thumbs.db
 # Solo se ignoran capturas temporales de trabajo:
 data/tmp/
 data/*.tmp
+
+# Material de la materia (tareas, entregables): no es parte del código.
+actividades/
