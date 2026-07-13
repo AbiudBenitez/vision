@@ -11,8 +11,12 @@ Teclas:
   1 preprocess (calibrar iluminación)   5 ellipses (deformación barreno)
   2 holes (contar barrenos)             6 shapes (polígono/esquinas)
   3 circulos (Hough)                    7 motion (trigger)
-  4 lineas (Hough)                      8 inspección completa
-  i inspeccionar frame actual           q salir
+  4 lineas (Hough)                      8 inspección completa (veredicto OK/NG)
+  9 describir (qué funda veo)           i inspeccionar frame actual
+  q salir
+
+El modo 9 no juzga: reporta la silueta y los barrenos que encuentre, sin esperar
+un número concreto. Es el que sirve con una funda distinta a la calibrada.
 
 Uso:
   python main.py                # webcam (default cam 0)
@@ -32,9 +36,11 @@ from src.ellipses import detectar_elipses
 from src.shapes import detectar_shapes
 from src.motion import TriggerInspeccion
 from src.inspeccion import inspeccion_completa
+from src.reporte import describir
 
 MODO_MOTION = ord("7")
 MODO_COMPLETA = ord("8")
+MODO_DESCRIBIR = ord("9")
 
 
 def _cerrar_ventana(nombre: str) -> None:
@@ -105,6 +111,8 @@ def main():
                 cv2.imshow("veredicto", ultimo_veredicto)
         elif modo_actual == MODO_COMPLETA:
             anotado, _ = inspeccion_completa(frame, cfg)
+        elif modo_actual == MODO_DESCRIBIR:
+            anotado, _ = describir(frame, cfg)
         else:
             _, fn, params = modos[modo_actual]
             anotado, _ = fn(frame, params)
@@ -121,6 +129,10 @@ def main():
             modo_actual = MODO_MOTION
         elif k == MODO_COMPLETA:
             modo_actual = MODO_COMPLETA
+        elif k == MODO_DESCRIBIR:
+            modo_actual = MODO_DESCRIBIR
+            _cerrar_ventana("veredicto")
+            ultimo_veredicto = None
         elif k in modos:
             modo_actual = k
             # Al salir de motion la ventana de veredicto queda huérfana; ciérrala.

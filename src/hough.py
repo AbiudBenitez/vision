@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from .preprocess import ParamsPreproceso, a_grises, binarizar
-from .holes import ParamsHoles, _contorno_funda
+from .holes import ParamsHoles, _contorno_funda, area_referencia
 
 
 @dataclass
@@ -56,11 +56,13 @@ class ParamsCirculos:
     # Rango de radios aceptados. Este rango ES el criterio de "barreno dentro de
     # diámetro": Hough sencillamente no reporta lo que cae fuera, así que un
     # barreno fuera de tolerancia se queda sin círculo y reprueba.
-    # Sanos medidos (fotos + webcam): 0.0436-0.0484. Defectuoso: 0.0328.
-    # El piso 0.038 se planta en el hueco entre ambos grupos; el techo 0.056 deja
-    # ~1.15x de holgura sobre el barreno sano más grande visto.
-    frac_radio_min: float = 0.038
-    frac_radio_max: float = 0.056
+    # Medido contra fotos Y webcam, normalizando por sqrt(área de REFERENCIA) de
+    # la funda: los barrenos sanos caen en 0.0425-0.053 en ambos montajes y el
+    # defectuoso de def_ovalado en 0.0321. El piso 0.037 se planta en el hueco
+    # entre ambos grupos; el techo 0.060 deja ~1.15x de holgura sobre el sano
+    # más grande visto.
+    frac_radio_min: float = 0.037
+    frac_radio_max: float = 0.060
 
     def radios_px(self, area_funda: float) -> tuple[int, int]:
         """Rango de radios en píxeles para el tamaño de funda detectado.
@@ -90,7 +92,7 @@ class ParamsLineas:
 
 
 def area_funda_de(frame: np.ndarray, pre: ParamsPreproceso, holes: ParamsHoles) -> float:
-    """Área en px del contorno de la funda. 0.0 si no hay funda en el frame.
+    """Área de REFERENCIA de la funda en px. 0.0 si no hay funda en el frame.
 
     Hough necesita el tamaño de la funda para saber qué radio ESPERAR (ver
     ParamsCirculos). En la inspección completa ese dato ya lo calculó holes y se
@@ -107,7 +109,7 @@ def area_funda_de(frame: np.ndarray, pre: ParamsPreproceso, holes: ParamsHoles) 
     i = _contorno_funda(
         contornos, jerarquia, holes.frac_min_funda * area_frame, binaria.shape
     )
-    return cv2.contourArea(contornos[i]) if i != -1 else 0.0
+    return area_referencia(contornos[i]) if i != -1 else 0.0
 
 
 def detectar_circulos(

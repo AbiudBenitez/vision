@@ -26,16 +26,21 @@ class ParamsHoles:
     # Medido en data/: la funda ocupa 23%-25% del frame. 0.02 deja margen amplio
     # para que la pieza pueda estar más lejos sin dejar de detectarse.
     frac_min_funda: float = 0.02
-    # Fracción del área de LA FUNDA que debe medir un hueco para ser barreno.
-    # Medido sobre las 5 fotos de data/: los barrenos SANOS caen en 0.0050-0.0058
-    # de forma muy estable. El límite inferior NO se pone pegado a ese rango a
-    # propósito: en def_ovalado el barreno defectuoso mide 0.0024, y si se cae de
-    # este filtro el sistema lo reporta como barreno FALTANTE en vez de
-    # DEFORME -> diagnóstico equivocado, y ellipses.py nunca llega a verlo.
-    # 0.002 lo deja entrar para que los detectores de forma lo juzguen.
-    # El techo 0.010 descarta manchas grandes del estampado.
-    frac_barreno_min: float = 0.002
-    frac_barreno_max: float = 0.010
+    # Fracción del ÁREA DE REFERENCIA de la funda (ver area_referencia) que debe
+    # medir un hueco para contar como barreno.
+    #
+    # Medido contra data/ Y contra la webcam, usando el rectángulo envolvente como
+    # denominador: los barrenos sanos caen en 0.0046-0.0059 en AMBOS montajes. El
+    # barreno defectuoso de def_ovalado mide 0.0023 y el ruido del estampado que
+    # sobrevive al filtro de circularidad se queda en 0.0010-0.0014.
+    #
+    # El piso 0.0018 se planta entre el barreno defectuoso (0.0023) y el ruido
+    # (0.0014). NO se sube hasta pegarlo al rango sano a propósito: si el barreno
+    # deforme se cae de este filtro, el sistema lo reporta como barreno FALTANTE
+    # en vez de DEFORME -> diagnóstico equivocado, y ellipses.py nunca lo ve.
+    # El techo 0.008 deja ~1.35x de holgura sobre el barreno sano más grande.
+    frac_barreno_min: float = 0.0018
+    frac_barreno_max: float = 0.008
     # Circularidad 4*pi*A/P^2 (1.0 = círculo perfecto). Este es el filtro que
     # hace el trabajo pesado, no el área: al bajar frac_barreno_min a 0.002
     # entran manchas del estampado en la banda 0.002-0.003, pero TODAS miden
@@ -58,6 +63,42 @@ def _circularidad(contorno) -> float:
     return float(4.0 * np.pi * cv2.contourArea(contorno) / (perimetro * perimetro))
 
 
+def area_referencia(contorno) -> float:
+    """Tamaño de la funda, medido con su rectángulo envolvente (minAreaRect).
+
+    Es el DENOMINADOR con el que se normaliza todo lo demás (tamaño de barreno,
+    radio esperado), así que tiene que ser estable. El área del contorno NO lo es:
+    la funda va estampada, y cuando el dibujo claro alcanza el borde de la pieza,
+    la binarización le muerde la silueta. Medido en webcam, esa mordida hunde el
+    área del contorno a 16% del frame cuando la pieza realmente ocupa 31%.
+
+    Eso envenena todo lo que se normalice con ella: frac_barreno = área_barreno /
+    área_funda, así que un denominador hundido INFLA la fracción y expulsa a
+    barrenos perfectamente sanos (medido: 0.0113 contra un techo de 0.010).
+
+    El rectángulo envolvente no se hunde. La funda es un rectángulo, y su
+    rectángulo envolvente mide lo mismo aunque al contorno le falte un pedazo.
+    Con este denominador los barrenos sanos dan 0.0046-0.0059 tanto en las fotos
+    como en la webcam con reflejo; con el área del contorno, 0.0050 y 0.0113.
+    """
+    (_, (w, h), _) = cv2.minAreaRect(contorno)
+    return float(w * h)
+
+
+def rectangularidad(contorno) -> float:
+    """Área del contorno / área de su rectángulo envolvente. 1.0 = rectángulo
+    perfecto.
+
+    Mide cuánto se aleja la silueta de un rectángulo, y sirve como SEMÁFORO de
+    confianza: una funda bien segmentada da 0.90-0.96, pero si el estampado o un
+    reflejo le muerden la silueta se desploma (medido: 0.52 en webcam). Cuando
+    cae, el conteo de vértices y de esquinas deja de ser fiable, y más vale
+    avisarlo que reportar un veredicto de forma en el que no se puede confiar.
+    """
+    a_rect = area_referencia(contorno)
+    return float(cv2.contourArea(contorno) / a_rect) if a_rect > 0 else 0.0
+
+
 def indices_barrenos(contornos, jerarquia, i_funda, params: "ParamsHoles") -> list[int]:
     """Índices de los hijos de la funda que son barrenos de verdad.
 
@@ -75,15 +116,15 @@ def indices_barrenos(contornos, jerarquia, i_funda, params: "ParamsHoles") -> li
     cuenta, el veredicto podría decir "3 barrenos OK" mientras el de elipses mide
     la deformación de una mancha del estampado.
     """
-    area_funda = cv2.contourArea(contornos[i_funda])
-    if area_funda <= 0:
+    a_ref = area_referencia(contornos[i_funda])
+    if a_ref <= 0:
         return []
 
     barrenos = []
     hijo = jerarquia[0][i_funda][2]
     while hijo != -1:
         c = contornos[hijo]
-        frac = cv2.contourArea(c) / area_funda
+        frac = cv2.contourArea(c) / a_ref
         if (
             params.frac_barreno_min <= frac <= params.frac_barreno_max
             and _circularidad(c) >= params.circularidad_min
@@ -198,6 +239,10 @@ def detectar_holes(
         "indices_barrenos": barrenos,
         "indice_funda": i_funda,
         # Hough lo necesita para saber qué radio de barreno esperar; se publica
-        # aquí para no volver a segmentar la funda por segunda vez.
-        "area_funda": cv2.contourArea(contornos[i_funda]),
+        # aquí para no volver a segmentar la funda por segunda vez. Es el área de
+        # REFERENCIA (rectángulo envolvente), no la del contorno: ver
+        # area_referencia() para por qué la del contorno no sirve como escala.
+        "area_funda": area_referencia(contornos[i_funda]),
+        # Semáforo de confianza en la silueta: si baja, la forma no es fiable.
+        "rectangularidad": rectangularidad(contornos[i_funda]),
     }
