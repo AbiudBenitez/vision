@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .preprocess import ParamsPreproceso, binarizar
+from .preprocess import ParamsPreproceso, a_grises, binarizar
 from .holes import ParamsHoles, _contorno_funda, indices_barrenos
 
 
@@ -72,7 +72,7 @@ def detectar_elipses(
         return anotado, {"barrenos": [], "todos_circulares": True}
 
     barrenos = []
-    for i in indices_barrenos(contornos, jerarquia, i_funda, p_holes):
+    for i in indices_barrenos(contornos, jerarquia, i_funda, p_holes, a_grises(frame)):
         c = contornos[i]
         if len(c) < params.puntos_min:
             continue

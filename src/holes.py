@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .preprocess import ParamsPreproceso, binarizar
+from .preprocess import ParamsPreproceso, a_grises, binarizar
 
 
 @dataclass
@@ -38,9 +38,29 @@ class ParamsHoles:
     # (0.0014). NO se sube hasta pegarlo al rango sano a propósito: si el barreno
     # deforme se cae de este filtro, el sistema lo reporta como barreno FALTANTE
     # en vez de DEFORME -> diagnóstico equivocado, y ellipses.py nunca lo ve.
-    # El techo 0.008 deja ~1.35x de holgura sobre el barreno sano más grande.
+    #
+    # El techo es ALTO (0.15) a propósito. Antes valía 0.008, ajustado a los
+    # barrenos circulares de la funda 1, y eso hacía invisible el agujero de otras
+    # fundas: el recorte de cámara de la funda 2 es un rectángulo redondeado que
+    # mide 0.099 del área de la pieza -12x un barreno- y quedaba fuera. Un agujero
+    # grande sigue siendo un agujero. Subir el techo no reabre la puerta al
+    # estampado: las manchas grandes del dibujo miden 0.26-0.45 de circularidad y
+    # las sigue bloqueando el filtro de forma.
     frac_barreno_min: float = 0.0018
-    frac_barreno_max: float = 0.008
+    frac_barreno_max: float = 0.15
+    # Un agujero es PASANTE: por él se ve el mismo fondo que rodea a la pieza. Una
+    # mancha del estampado o un brillo especular están SOBRE el plástico.
+    # Medido |media(hueco) - media(fondo)| en niveles de gris: los agujeros reales
+    # dan 0-18 (incluido el recorte de la funda 2, que da 6) y las manchas dan
+    # 38-43. El corte en 25 cae entre ambos grupos.
+    #
+    # Es el filtro que descarta la manchita central de la funda 2, que por forma y
+    # tamaño (frac=0.0021, circ=0.82) es indistinguible de un barreno real.
+    #
+    # OJO: es un umbral sobre INTENSIDAD, así que es el criterio más sensible a la
+    # iluminación de todo el proyecto. El margen sano (18 contra 38) es cómodo,
+    # pero un fondo mucho más oscuro o un agujero en sombra pueden estrecharlo.
+    dif_fondo_max: float = 25.0
     # Circularidad 4*pi*A/P^2 (1.0 = círculo perfecto). Este es el filtro que
     # hace el trabajo pesado, no el área: al bajar frac_barreno_min a 0.002
     # entran manchas del estampado en la banda 0.002-0.003, pero TODAS miden
@@ -99,7 +119,36 @@ def rectangularidad(contorno) -> float:
     return float(cv2.contourArea(contorno) / a_rect) if a_rect > 0 else 0.0
 
 
-def indices_barrenos(contornos, jerarquia, i_funda, params: "ParamsHoles") -> list[int]:
+def _media_fondo(gris, contorno_funda) -> float:
+    """Intensidad media del fondo, fuera del rectángulo envolvente de la pieza.
+
+    Se excluye el rectángulo entero y no solo el contorno para no rozar el borde
+    de la funda, que es un degradado y contaminaría la media.
+    """
+    fuera = np.full(gris.shape, 255, np.uint8)
+    caja = cv2.boxPoints(cv2.minAreaRect(contorno_funda)).astype(np.int32)
+    cv2.fillPoly(fuera, [caja], 0)
+    return float(cv2.mean(gris, fuera)[0])
+
+
+def _ve_el_fondo(gris, contorno, media_fondo, tolerancia) -> bool:
+    """True si por este hueco se ve el fondo, es decir: es un agujero de verdad.
+
+    Un agujero es pasante y muestra el mismo foam que rodea la pieza; una mancha
+    impresa o un reflejo están sobre el plástico y son más oscuros. Se erosiona la
+    máscara para medir el INTERIOR del hueco y no su borde, que es un degradado.
+    """
+    m = np.zeros(gris.shape, np.uint8)
+    cv2.drawContours(m, [contorno], -1, 255, -1)
+    m = cv2.erode(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    if cv2.countNonZero(m) == 0:
+        return False
+    return abs(float(cv2.mean(gris, m)[0]) - media_fondo) <= tolerancia
+
+
+def indices_barrenos(
+    contornos, jerarquia, i_funda, params: "ParamsHoles", gris=None
+) -> list[int]:
     """Índices de los hijos de la funda que son barrenos de verdad.
 
     Los barrenos son los hijos directos del contorno de la funda: recorremos la
@@ -120,15 +169,22 @@ def indices_barrenos(contornos, jerarquia, i_funda, params: "ParamsHoles") -> li
     if a_ref <= 0:
         return []
 
+    # Sin el gris no se puede comprobar que el hueco sea pasante; el filtro de
+    # fondo simplemente no se aplica (los llamadores que lo pasan sí lo tienen).
+    media_fondo = _media_fondo(gris, contornos[i_funda]) if gris is not None else None
+
     barrenos = []
     hijo = jerarquia[0][i_funda][2]
     while hijo != -1:
         c = contornos[hijo]
         frac = cv2.contourArea(c) / a_ref
-        if (
+        es_barreno = (
             params.frac_barreno_min <= frac <= params.frac_barreno_max
             and _circularidad(c) >= params.circularidad_min
-        ):
+        )
+        if es_barreno and media_fondo is not None:
+            es_barreno = _ve_el_fondo(gris, c, media_fondo, params.dif_fondo_max)
+        if es_barreno:
             barrenos.append(hijo)
         hijo = jerarquia[0][hijo][0]
     return barrenos
@@ -217,7 +273,9 @@ def detectar_holes(
 
     cv2.drawContours(anotado, contornos, i_funda, (255, 0, 0), 2)
 
-    barrenos = indices_barrenos(contornos, jerarquia, i_funda, params)
+    barrenos = indices_barrenos(
+        contornos, jerarquia, i_funda, params, a_grises(frame)
+    )
     for i in barrenos:
         cv2.drawContours(anotado, contornos, i, (0, 0, 255), 2)
 

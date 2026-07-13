@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from .config import ParamsInspeccion
-from .preprocess import binarizar
+from .preprocess import a_grises, binarizar
 from .holes import (
     _circularidad,
     _contorno_funda,
@@ -76,7 +76,9 @@ def describir(frame: np.ndarray, cfg: ParamsInspeccion) -> tuple[np.ndarray, dic
 
     # Barrenos: se reportan TODOS los que se encuentren, sin esperar un número.
     barrenos = []
-    for i in indices_barrenos(contornos, jerarquia, i_funda, cfg.holes):
+    for i in indices_barrenos(
+        contornos, jerarquia, i_funda, cfg.holes, a_grises(frame)
+    ):
         c = contornos[i]
         if len(c) < 5:
             continue
